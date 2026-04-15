@@ -114,6 +114,14 @@ func getCreatedUIDs(uidsMap map[string]string) []string {
 }
 
 func (m *mutation) mutate() ([]string, error) {
+	// If the data implements HasReflectable, swap to the all-exported model
+	// so reflectwalk and the rest of the mutation pipeline work normally.
+	var ra HasReflectable
+	if v, ok := m.data.(HasReflectable); ok {
+		ra = v
+		m.data = v.ToReflectable()
+	}
+
 	// Build type cache for schema info (including ManagedReverse detection)
 	// Must use skipTyping: false to parse schema for nested types
 	preHook := generateSchemaHook{mutation: m, skipTyping: false}
@@ -185,6 +193,11 @@ func (m *mutation) mutate() ([]string, error) {
 	err = reflectwalk.Walk(m.data, postHook)
 	if err != nil {
 		return nil, errors.Wrap(err, "post-mutation hook failed")
+	}
+
+	// Copy UID/DType back to the original entity
+	if ra != nil {
+		ra.FromReflectable(m.data)
 	}
 
 	return getCreatedUIDs(resp.Uids), nil
@@ -566,6 +579,14 @@ func (m *mutation) createForwardEdgeMutations(field reflect.Value, parentUID str
 }
 
 func (m *mutation) do() ([]string, error) {
+	// If the data implements HasReflectable, swap to the all-exported model
+	// so reflectwalk and the rest of the mutation pipeline work normally.
+	var ra HasReflectable
+	if v, ok := m.data.(HasReflectable); ok {
+		ra = v
+		m.data = v.ToReflectable()
+	}
+
 	err := m.generateRequest()
 	if err != nil {
 		return nil, errors.Wrap(err, "generate request failed")
@@ -581,6 +602,11 @@ func (m *mutation) do() ([]string, error) {
 	err = m.processResponse(resp)
 	if err != nil {
 		return nil, err
+	}
+
+	// Copy UID/DType back to the original entity
+	if ra != nil {
+		ra.FromReflectable(m.data)
 	}
 
 	return getCreatedUIDs(resp.Uids), nil
@@ -690,6 +716,9 @@ func (m *mutation) setEdge(nodeValue, edge map[string]interface{}, field reflect
 func copyStructToMap(structVal reflect.Value, target map[string]interface{}) {
 	for i := 0; i < structVal.NumField(); i++ {
 		field := structVal.Field(i)
+		if !field.CanInterface() {
+			continue
+		}
 		jsonTags := strings.Split(structVal.Type().Field(i).Tag.Get("json"), ",")
 		if len(jsonTags) == 0 {
 			continue
@@ -1184,6 +1213,9 @@ func (h setUIDHook) Struct(v reflect.Value, level int) error {
 }
 
 func (h setUIDHook) StructField(s reflect.Value, f reflect.StructField, v reflect.Value, level int) error {
+	if !v.CanInterface() {
+		return nil
+	}
 	err := setUIDs(f, v, h.resp.Uids)
 	if err != nil {
 		return errors.Wrap(err, "set UIDs failed")

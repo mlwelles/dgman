@@ -30,6 +30,21 @@ import (
 	"github.com/pkg/errors"
 )
 
+// queryModelValue returns the instance to use for query-building introspection.
+// If model implements HasReflectable, the returned value's type carries the exported
+// fields and struct tags needed for DQL generation and predicate remapping.
+func queryModelValue(model any) any {
+	if ra, ok := model.(HasReflectable); ok {
+		return ra.ToReflectable()
+	}
+	return model
+}
+
+// queryModelType returns the reflect.Type to use for query-building introspection.
+func queryModelType(model any) reflect.Type {
+	return reflect.TypeOf(queryModelValue(model))
+}
+
 // buildPredicateToJSONMap builds a mapping from dgraph predicate names to json tag names
 // for struct fields where predicate= differs from the json tag.
 // It works recursively for nested edge structs.
@@ -302,13 +317,20 @@ func (q *QueryBlock) scanModel(result []byte) error {
 		}
 		modelType = modelType.Elem()
 
+		// Use query model type for predicate remapping (has exported fields with tags)
+		remapModelType := queryModelType(block.model)
+		if remapModelType.Kind() == reflect.Ptr {
+			remapModelType = remapModelType.Elem()
+		}
+
 		switch modelType.Kind() {
 		case reflect.Struct:
 			modelSliceRef := reflect.MakeSlice(reflect.SliceOf(reflect.PtrTo(modelType)), 1, 1)
 			modelSlice := reflect.New(modelSliceRef.Type())
 			modelSlice.Elem().Set(modelSliceRef)
 			// Remap predicate keys before unmarshaling
-			remappedBlock, remapErr := remapPredicateKeys(blockResult, modelSliceRef.Type())
+			remapSliceType := reflect.SliceOf(reflect.PtrTo(remapModelType))
+			remappedBlock, remapErr := remapPredicateKeys(blockResult, remapSliceType)
 			if remapErr == nil {
 				blockResult = stdjson.RawMessage(remappedBlock)
 			}
@@ -321,7 +343,7 @@ func (q *QueryBlock) scanModel(result []byte) error {
 			}
 		case reflect.Slice:
 			// Remap predicate keys before unmarshaling
-			remappedBlock, remapErr := remapPredicateKeys(blockResult, modelType)
+			remappedBlock, remapErr := remapPredicateKeys(blockResult, remapModelType)
 			if remapErr == nil {
 				blockResult = stdjson.RawMessage(remappedBlock)
 			}
@@ -611,9 +633,10 @@ func (q *Query) All(depthParam ...int) *Query {
 		depth = depthParam[0]
 	}
 
-	// Use model-aware expansion if model is set to include managed reverse edges
+	// Use model-aware expansion if model is set to include managed reverse edges.
+	// Resolve through HasReflectable so tag introspection uses the exported model.
 	if q.model != nil {
-		q.query = expandAllWithReverseEdges(depth, q.model)
+		q.query = expandAllWithReverseEdges(depth, queryModelValue(q.model))
 	} else {
 		q.query = expandAll(depth)
 	}
@@ -717,9 +740,11 @@ func (q *Query) node(jsonData []byte, dst interface{}) error {
 		return ErrNodeNotFound
 	}
 
-	// Remap predicate keys to json tag names if needed
-	dstType := reflect.TypeOf(dst)
-	remapped, err := remapPredicateKeys(dataBytes, dstType)
+	// Remap predicate keys to json tag names if needed.
+	// Use the query model type for predicate mapping (it has exported fields
+	// with the correct tags), not dst which may have unexported fields.
+	remapType := queryModelType(q.model)
+	remapped, err := remapPredicateKeys(dataBytes, remapType)
 	if err == nil {
 		dataBytes = remapped
 	}
@@ -752,9 +777,10 @@ func (q *Query) nodes(jsonData []byte, dst interface{}) error {
 
 	dataBytes := jsonData[dataPrefixLen : dataLen-1]
 
-	// Remap predicate keys to json tag names if needed
-	dstType := reflect.TypeOf(dst)
-	remapped, err := remapPredicateKeys(dataBytes, dstType)
+	// Remap predicate keys to json tag names if needed.
+	// Use the query model type for predicate mapping.
+	remapType := queryModelType(q.model)
+	remapped, err := remapPredicateKeys(dataBytes, remapType)
 	if err == nil {
 		dataBytes = remapped
 	}
@@ -813,9 +839,10 @@ func (q *Query) NodesAndCount(dst ...interface{}) (count int, err error) {
 		return 0, nil
 	}
 
-	// Remap predicate keys before unmarshaling
+	// Remap predicate keys before unmarshaling.
+	// Use query model type for predicate mapping.
 	resultBytes := []byte(pagedResult.Result)
-	remappedResult, remapErr := remapPredicateKeys(resultBytes, reflect.TypeOf(model))
+	remappedResult, remapErr := remapPredicateKeys(resultBytes, queryModelType(q.model))
 	if remapErr == nil {
 		resultBytes = remappedResult
 	}
@@ -860,7 +887,7 @@ func (q *Query) generateQuery(queryBuf *strings.Builder) {
 		queryBuf.WriteString(q.rootFunc)
 	} else {
 		// if root function is not defined, query from node type
-		nodeType := GetNodeType(q.model)
+		nodeType := GetNodeType(queryModelValue(q.model))
 		queryBuf.WriteString("type(")
 		queryBuf.WriteString(nodeType)
 		queryBuf.WriteByte(')')

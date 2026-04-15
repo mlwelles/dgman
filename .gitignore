@@ -11,4 +11,4 @@ examples/schema/schema.exe
 examples/mutate/mutate
 examples/mutate/mutate.exe
 
-*.exe
+*.exe.idea/

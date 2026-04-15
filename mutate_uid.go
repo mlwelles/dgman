@@ -103,5 +103,8 @@ func (w setUIDWalker) Struct(v reflect.Value, level int) error {
 }
 
 func (w setUIDWalker) StructField(f reflect.StructField, v, p reflect.Value, level int) error {
+	if !v.CanInterface() {
+		return nil
+	}
 	return setUIDs(f, v, w.uids)
 }

@@ -46,6 +46,22 @@ type SchemaType interface {
 	SchemaType() string
 }
 
+// HasReflectable is implemented by types with unexported fields that need
+// an all-exported mirror for dgman's reflect-based pipelines.
+//
+// On the query path, dgman calls ToReflectable() and uses only its
+// reflect.Type for struct tag introspection (DQL generation, predicate
+// remapping). Query results are unmarshaled directly into the original
+// type via json.Unmarshal / UnmarshalJSON.
+//
+// On the mutation path, dgman calls ToReflectable() to get a populated
+// all-exported copy, runs the full mutation pipeline on it, then calls
+// FromReflectable() to copy UID/DType back to the original entity.
+type HasReflectable interface {
+	ToReflectable() any
+	FromReflectable(model any)
+}
+
 var (
 	_ TxnInterface = (*TxnContext)(nil)
 )
